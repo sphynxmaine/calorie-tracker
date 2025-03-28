@@ -4,381 +4,473 @@ import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../firebase';
 import { collection, addDoc, query, where, orderBy, getDocs, limit, doc, getDoc, setDoc, Timestamp, updateDoc } from 'firebase/firestore';
 import PageHeader from '../components/PageHeader';
+import { format } from 'date-fns';
+import { formatDate, generateUniqueId, formatDisplayDate, getTodayAtMidnight, calculateBMI, getBMICategory } from '../utils/helpers';
 
 const LogWeightPage = () => {
   const { isDarkMode } = useTheme();
   const navigate = useNavigate();
   const [weight, setWeight] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-  const [recentWeights, setRecentWeights] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
-  
+  const [weightUnit, setWeightUnit] = useState('kg'); // 'kg' or 'lbs'
+  const [date, setDate] = useState(formatDate(new Date()));
+  const [notes, setNotes] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [lastEntries, setLastEntries] = useState([]);
+  const [hasExistingEntryForToday, setHasExistingEntryForToday] = useState(false);
+  const [userProfile, setUserProfile] = useState(null);
+
   useEffect(() => {
-    fetchRecentWeights();
+    fetchUserProfile();
+    fetchLastEntries();
   }, []);
   
-  const fetchRecentWeights = async () => {
+  const fetchUserProfile = async () => {
     try {
-      setLoading(true);
       const userId = auth.currentUser?.uid;
-      if (!userId) return;
-      
-      // Get the user profile first to check for weight history
-      const profileRef = doc(db, 'userProfiles', userId);
-      const profileSnap = await getDoc(profileRef);
-      
-      if (profileSnap.exists() && profileSnap.data().weightHistory) {
-        // Use the weight history from the profile (already sorted)
-        const weightHistory = profileSnap.data().weightHistory || [];
-        setRecentWeights(weightHistory.slice(0, 10)); // Get the 10 most recent entries
-        setLoading(false);
+      if (!userId) {
+        navigate('/login');
         return;
       }
       
-      // Fallback to querying the weightLogs collection directly
-      const weekAgo = new Date();
-      weekAgo.setDate(weekAgo.getDate() - 30);
+      const userDoc = await getDoc(doc(db, 'users', userId));
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        setUserProfile(userData);
+        
+        // Set the preferred weight unit from the user profile
+        if (userData.weightUnit) {
+          setWeightUnit(userData.weightUnit);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching user profile:', error);
+    }
+  };
+  
+  const fetchLastEntries = async () => {
+    try {
+      const userId = auth.currentUser?.uid;
+      if (!userId) return;
       
+      const weightLogsRef = collection(db, 'weightLogs');
       const q = query(
-        collection(db, 'weightLogs'),
+        weightLogsRef,
         where('userId', '==', userId),
-        where('date', '>=', weekAgo.toISOString().split('T')[0]),
         orderBy('date', 'desc'),
-        limit(10)
+        limit(5)
       );
       
       const querySnapshot = await getDocs(q);
-      const weights = [];
+      const entries = [];
+      let todayEntry = null;
+      const today = formatDate(getTodayAtMidnight());
       
       querySnapshot.forEach((doc) => {
-        const data = doc.data();
-        weights.push({
-          date: data.date,
-          weight: data.weight
+        const entry = doc.data();
+        entries.push({
+          id: doc.id,
+          ...entry,
+          displayDate: formatDisplayDate(entry.date.toDate())
         });
-      });
-      
-      // Sort by date (newest first)
-      weights.sort((a, b) => new Date(b.date) - new Date(a.date));
-      
-      setRecentWeights(weights);
-      setLoading(false);
-    } catch (error) {
-      console.error('Error fetching recent weights:', error);
-      setLoading(false);
-    }
-  };
-  
-  // Get existing weight log for the selected date if it exists
-  const getExistingWeightLogForDate = async (userId, dateStr) => {
-    try {
-      const weightQuery = query(
-        collection(db, 'weightLogs'),
-        where('userId', '==', userId),
-        where('date', '==', dateStr)
-      );
-      
-      const snapshot = await getDocs(weightQuery);
-      let existingLog = null;
-      
-      snapshot.forEach(doc => {
-        // Only take the first one if multiple exist
-        if (!existingLog) {
-          existingLog = {
-            id: doc.id,
-            ...doc.data()
-          };
+        
+        // Check if there's an entry for today
+        const entryDate = formatDate(entry.date.toDate());
+        if (entryDate === today) {
+          todayEntry = entry;
         }
       });
       
-      return existingLog;
+      setLastEntries(entries);
+      setHasExistingEntryForToday(!!todayEntry);
+      
+      // If there's an entry for today, pre-fill the form
+      if (todayEntry) {
+        setWeight(String(todayEntry.weight));
+        setNotes(todayEntry.notes || '');
+      }
     } catch (error) {
-      console.error('Error checking for existing weight log:', error);
-      return null;
+      console.error('Error fetching weight logs:', error);
     }
   };
-  
-  // Update the user's profile with the latest weight
-  const updateUserProfile = async (weightValue) => {
+
+  const updateDailyWeightLog = async () => {
     try {
-      const userId = auth.currentUser?.uid;
-      if (!userId) return;
-      
-      // Format the date consistently
-      const dateString = date.toISOString().split('T')[0];
-      
-      // First, get the current profile to avoid overwriting other data
-      const profileRef = doc(db, 'userProfiles', userId);
-      const profileSnap = await getDoc(profileRef);
-      
-      // Create weight history array if it doesn't exist
-      let weightHistory = [];
-      
-      // Update the profile with the new weight, preserving other fields
-      if (profileSnap.exists()) {
-        const profileData = profileSnap.data();
-        
-        // Get existing weight history or create a new one
-        weightHistory = profileData.weightHistory || [];
-        
-        // Add the new weight entry (avoid duplicates by date)
-        const existingEntryIndex = weightHistory.findIndex(entry => entry.date === dateString);
-        if (existingEntryIndex >= 0) {
-          // Update existing entry
-          weightHistory[existingEntryIndex] = {
-            date: dateString,
-            weight: weightValue
-          };
-        } else {
-          // Add new entry
-          weightHistory.push({
-            date: dateString,
-            weight: weightValue
-          });
-        }
-        
-        // Sort by date (newest first)
-        weightHistory.sort((a, b) => new Date(b.date) - new Date(a.date));
-        
-        // Keep only the last 90 entries
-        if (weightHistory.length > 90) {
-          weightHistory = weightHistory.slice(0, 90);
-        }
-        
-        // Store the weight in the profile and track the date it was updated
-        await setDoc(profileRef, {
-          ...profileData,
-          weight: weightValue,
-          weightHistory,
-          lastWeightUpdate: dateString,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-        
-        console.log('Profile updated with new weight:', weightValue);
-      } else {
-        // If no profile exists, create one with basic weight information
-        weightHistory = [{
-          date: dateString,
-          weight: weightValue
-        }];
-        
-        await setDoc(profileRef, {
-          weight: weightValue,
-          weightHistory,
-          lastWeightUpdate: dateString,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        });
-        console.log('New profile created with weight:', weightValue);
+      if (!weight.trim()) {
+        setError('Please enter your weight');
+        return false;
       }
       
-      return true;
-    } catch (error) {
-      console.error('Error updating profile with weight:', error);
-      throw error;
-    }
-  };
-  
-  // Add or update daily weight log entry
-  const updateDailyWeightLog = async (userId, date, weightValue) => {
-    try {
-      // Format the date consistently (YYYY-MM-DD)
-      const dateString = date.toISOString().split('T')[0];
+      const numWeight = parseFloat(weight);
+      if (isNaN(numWeight) || numWeight <= 0) {
+        setError('Please enter a valid weight');
+        return false;
+      }
       
-      // Create a unique ID for the weight log based on user and date
-      const weightLogId = `${userId}_${dateString}`;
+      const userId = auth.currentUser?.uid;
+      if (!userId) {
+        navigate('/login');
+        return false;
+      }
       
-      // Reference to the weight log document
-      const weightLogRef = doc(db, 'weightLogs', weightLogId);
+      const weightLogId = generateUniqueId();
+      const weightInKg = weightUnit === 'lbs' ? numWeight / 2.205 : numWeight;
       
-      // Store the weight log with all required fields
-      await setDoc(weightLogRef, {
-        userId,
-        date: dateString,
-        weight: weightValue,
-        timestamp: new Date().toISOString(),
-        createdAt: new Date().toISOString()
-      });
+      // Format the date consistently
+      const selectedDate = new Date(date);
+      const timestamp = selectedDate;
       
-      console.log('Weight log updated:', weightValue, 'on', dateString);
+      // Check if we already have an entry for this date
+      const todayFormatted = formatDate(selectedDate);
+      const weightLogsRef = collection(db, 'weightLogs');
+      const q = query(
+        weightLogsRef,
+        where('userId', '==', userId),
+        where('dateFormatted', '==', todayFormatted)
+      );
+      
+      const querySnapshot = await getDocs(q);
+      
+      let docRef;
+      if (!querySnapshot.empty) {
+        // Update existing entry
+        docRef = doc(db, 'weightLogs', querySnapshot.docs[0].id);
+        await updateDoc(docRef, {
+          weight: numWeight,
+          weightInKg,
+          notes,
+          updatedAt: new Date()
+        });
+      } else {
+        // Create new entry
+        docRef = doc(db, 'weightLogs', weightLogId);
+        await setDoc(docRef, {
+          userId,
+          weight: numWeight,
+          weightInKg,
+          weightUnit,
+          date: timestamp,
+          dateFormatted: todayFormatted,
+          notes,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+      }
+      
       return true;
     } catch (error) {
       console.error('Error updating weight log:', error);
-      throw error;
+      setError('Failed to save weight log. Please try again.');
+      return false;
     }
   };
-  
+
+  const updateUserProfile = async (weightInKg) => {
+    try {
+      const userId = auth.currentUser?.uid;
+      if (!userId || !userProfile) return;
+      
+      const userRef = doc(db, 'users', userId);
+      
+      // Calculate BMI if height is available
+      let bmi = null;
+      let bmiCategory = null;
+      if (userProfile.height) {
+        bmi = calculateBMI(weightInKg, userProfile.height);
+        bmiCategory = getBMICategory(bmi);
+      }
+      
+      await updateDoc(userRef, {
+        currentWeight: weightInKg,
+        weightUnit,
+        bmi,
+        bmiCategory,
+        updatedAt: new Date()
+      });
+      
+      return true;
+    } catch (error) {
+      console.error('Error updating user profile:', error);
+      setError('Failed to update your profile. Please try again.');
+      return false;
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (!weight || !date) {
-      return;
-    }
+    setError('');
+    setSuccess('');
+    setIsLoading(true);
     
     try {
-      setLoading(true);
-      const userId = auth.currentUser?.uid;
+      // Convert weight to kg for storage
+      const numWeight = parseFloat(weight);
+      const weightInKg = weightUnit === 'lbs' ? numWeight / 2.205 : numWeight;
       
-      if (!userId) {
-        console.error('No user ID found');
-        setLoading(false);
+      // Update weight log
+      const logUpdated = await updateDailyWeightLog();
+      if (!logUpdated) {
+        setIsLoading(false);
         return;
       }
       
-      const weightValue = parseFloat(weight);
-      
-      // Update the daily weight log
-      await updateDailyWeightLog(userId, date, weightValue);
-      
       // Update user profile with current weight
-      await updateUserProfile(weightValue);
+      const profileUpdated = await updateUserProfile(weightInKg);
       
-      // Success message
-      setSuccess(true);
-      setWeight('');
+      setIsLoading(false);
       
-      // Refresh the recent weights
-      await fetchRecentWeights();
-      
-      // Reset success message after 3 seconds
-      setTimeout(() => {
-        setSuccess(false);
-      }, 3000);
-      
-      setLoading(false);
+      if (logUpdated && profileUpdated) {
+        setSuccess('Weight logged successfully!');
+        fetchLastEntries(); // Refresh the entries list
+        
+        // Clear form if it's a new entry
+        if (!hasExistingEntryForToday) {
+          setNotes('');
+        }
+      }
     } catch (error) {
       console.error('Error logging weight:', error);
-      setLoading(false);
+      setError('An error occurred. Please try again.');
+      setIsLoading(false);
     }
   };
-  
+
+  const handleWeightUnitChange = (unit) => {
+    if (unit === weightUnit) return;
+    
+    // Convert the current weight value when changing units
+    if (weight) {
+      const numWeight = parseFloat(weight);
+      if (!isNaN(numWeight)) {
+        if (unit === 'kg' && weightUnit === 'lbs') {
+          // Convert from lbs to kg
+          setWeight((numWeight / 2.205).toFixed(1));
+        } else if (unit === 'lbs' && weightUnit === 'kg') {
+          // Convert from kg to lbs
+          setWeight((numWeight * 2.205).toFixed(1));
+        }
+      }
+    }
+    
+    setWeightUnit(unit);
+  };
+
+  const goToGraphsPage = () => {
+    navigate('/graphs');
+  };
+
+  const deleteWeightLog = async (logId) => {
+    try {
+      if (!window.confirm('Are you sure you want to delete this weight log?')) {
+        return;
+      }
+      
+      setIsLoading(true);
+      await updateDoc(doc(db, 'weightLogs', logId), {
+        deleted: true,
+        updatedAt: new Date()
+      });
+      
+      setSuccess('Weight log deleted');
+      fetchLastEntries(); // Refresh the list
+      
+      // If we deleted today's entry, reset the form
+      if (hasExistingEntryForToday) {
+        setWeight('');
+        setNotes('');
+        setHasExistingEntryForToday(false);
+      }
+      
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Error deleting weight log:', error);
+      setError('Failed to delete weight log');
+      setIsLoading(false);
+    }
+  };
+
   return (
-    <div className={`min-h-screen ${isDarkMode ? 'bg-gray-900' : 'bg-gray-50'}`}>
+    <div className={`min-h-screen ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
       <PageHeader 
         title="Log Weight" 
         showBackButton={true}
       />
       
-      <div className="p-6">
-        <form onSubmit={handleSubmit} className="mb-8">
-          <div className="mb-6">
-            <label 
-              htmlFor="weight" 
-              className={`block mb-2 font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}
-            >
-              Weight (kg)
-            </label>
-            <div className="flex items-center">
-              <button 
-                type="button"
-                onClick={() => setWeight(prev => Math.max(1, parseFloat(prev || 1) - 0.1).toFixed(1))}
-                className={`p-3 rounded-l-lg ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-gray-800'}`}
-              >
-                -
-              </button>
-              <input
-                type="number"
-                id="weight"
-                step="0.1"
-                value={weight}
-                onChange={(e) => setWeight(e.target.value)}
-                placeholder="Enter your weight"
-                className={`w-full p-3 text-center ${
-                  isDarkMode 
-                    ? 'bg-gray-800 text-white border-gray-700' 
-                    : 'bg-white text-gray-900 border-gray-300'
-                } border-y focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                required
-              />
-              <button 
-                type="button"
-                onClick={() => setWeight(prev => (parseFloat(prev || 0) + 0.1).toFixed(1))}
-                className={`p-3 rounded-r-lg ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-gray-800'}`}
-              >
-                +
-              </button>
-            </div>
+      <div className="container mx-auto px-4 py-8 max-w-md">
+        {error && (
+          <div className="mb-4 p-3 bg-red-100 text-red-800 rounded-md">
+            {error}
           </div>
-          
-          <div className="mb-6">
-            <label 
-              htmlFor="date" 
-              className={`block mb-2 font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}
-            >
-              Date
-            </label>
-            <input
-              type="date"
-              id="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              max={new Date().toISOString().split('T')[0]}
-              className={`w-full p-3 rounded-lg ${
-                isDarkMode 
-                  ? 'bg-gray-800 text-white border-gray-700' 
-                  : 'bg-white text-gray-900 border-gray-300'
-              } border focus:outline-none focus:ring-2 focus:ring-blue-500`}
-              required
-            />
-          </div>
-          
-          <button
-            type="submit"
-            disabled={loading}
-            className={`w-full py-4 px-4 rounded-lg transition-all duration-200 ${
-              isDarkMode 
-                ? 'bg-blue-600 hover:bg-blue-700' 
-                : 'bg-blue-500 hover:bg-blue-600'
-            } text-white font-medium shadow-md ${loading ? 'opacity-70 cursor-not-allowed' : ''} btn-bounce`}
-          >
-            {loading ? (
-              <div className="flex items-center justify-center">
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
-                Saving...
-              </div>
-            ) : 'Save Weight'}
-          </button>
-          
-          {success && (
-            <div className="mt-4 p-4 bg-green-100 text-green-800 rounded-lg text-center">
-              Weight logged successfully!
-            </div>
-          )}
-        </form>
+        )}
         
-        {/* Recent Weights */}
-        <div className={`rounded-lg overflow-hidden ${isDarkMode ? 'bg-gray-800' : 'bg-white'} shadow-md`}>
-          <div className={`px-4 py-3 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-            <h2 className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-              Recent Weight Entries
-            </h2>
+        {success && (
+          <div className="mb-4 p-3 bg-green-100 text-green-800 rounded-md">
+            {success}
           </div>
+        )}
+        
+        <div className={`p-6 rounded-lg shadow-md ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+          <h2 className="text-xl font-semibold mb-4">
+            {hasExistingEntryForToday ? 'Update Today\'s Weight' : 'Log Your Weight'}
+          </h2>
           
-          {recentWeights.length > 0 ? (
-            <div>
-              {recentWeights.map((entry) => (
-                <div 
-                  key={entry.date} 
-                  className={`px-6 py-4 flex justify-between items-center ${
-                    isDarkMode ? 'border-b border-gray-700' : 'border-b border-gray-200'
+          <form onSubmit={handleSubmit}>
+            <div className="mb-4">
+              <label className="block mb-2 font-medium">Date</label>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className={`w-full p-2 rounded border ${
+                  isDarkMode
+                    ? 'bg-gray-700 border-gray-600 text-white'
+                    : 'bg-white border-gray-300 text-gray-900'
+                }`}
+                max={formatDate(new Date())}
+              />
+            </div>
+            
+            <div className="mb-4">
+              <label className="block mb-2 font-medium">Weight</label>
+              <div className="flex">
+                <input
+                  type="number"
+                  value={weight}
+                  onChange={(e) => setWeight(e.target.value)}
+                  step="0.1"
+                  min="0"
+                  className={`flex-1 p-2 rounded-l border-t border-b border-l ${
+                    isDarkMode
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                  placeholder={`Weight in ${weightUnit}`}
+                  required
+                />
+                <div className="flex border-t border-b border-r rounded-r overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => handleWeightUnitChange('kg')}
+                    className={`px-3 py-2 ${
+                      weightUnit === 'kg'
+                        ? isDarkMode
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-blue-500 text-white'
+                        : isDarkMode
+                        ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    kg
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleWeightUnitChange('lbs')}
+                    className={`px-3 py-2 ${
+                      weightUnit === 'lbs'
+                        ? isDarkMode
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-blue-500 text-white'
+                        : isDarkMode
+                        ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    lbs
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            <div className="mb-4">
+              <label className="block mb-2 font-medium">Notes (optional)</label>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                className={`w-full p-2 rounded border ${
+                  isDarkMode
+                    ? 'bg-gray-700 border-gray-600 text-white'
+                    : 'bg-white border-gray-300 text-gray-900'
+                }`}
+                placeholder="How are you feeling today?"
+                rows="3"
+              />
+            </div>
+            
+            <button
+              type="submit"
+              disabled={isLoading}
+              className={`w-full py-2 px-4 rounded font-medium ${
+                isLoading
+                  ? 'bg-gray-400 cursor-not-allowed'
+                  : isDarkMode
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                  : 'bg-blue-500 hover:bg-blue-600 text-white'
+              }`}
+            >
+              {isLoading ? (
+                <span className="flex items-center justify-center">
+                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Saving...
+                </span>
+              ) : hasExistingEntryForToday ? 'Update Weight' : 'Log Weight'}
+            </button>
+          </form>
+        </div>
+        
+        {lastEntries.length > 0 && (
+          <div className={`mt-6 p-6 rounded-lg shadow-md ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold">Recent Entries</h2>
+              <button
+                onClick={goToGraphsPage}
+                className={`text-sm px-3 py-1 rounded ${
+                  isDarkMode
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                    : 'bg-blue-500 hover:bg-blue-600 text-white'
+                }`}
+              >
+                View Graph
+              </button>
+            </div>
+            
+            <div className="space-y-3">
+              {lastEntries.map((entry) => (
+                <div
+                  key={entry.id}
+                  className={`flex justify-between items-center p-3 rounded ${
+                    isDarkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'
                   }`}
                 >
-                  <div className={isDarkMode ? 'text-white' : 'text-gray-900'}>
-                    {new Date(entry.date).toLocaleDateString()}
+                  <div>
+                    <div className="font-medium">{entry.displayDate}</div>
+                    <div className="text-sm opacity-75">
+                      {entry.weight} {entry.weightUnit}
+                      {entry.notes && (
+                        <span className="ml-2">- {entry.notes.length > 20 ? `${entry.notes.substring(0, 20)}...` : entry.notes}</span>
+                      )}
+                    </div>
                   </div>
-                  <div className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                    {entry.weight} kg
-                  </div>
+                  <button
+                    onClick={() => deleteWeightLog(entry.id)}
+                    className={`p-1 rounded ${
+                      isDarkMode ? 'hover:bg-red-800 text-red-400' : 'hover:bg-red-100 text-red-600'
+                    }`}
+                    title="Delete entry"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
                 </div>
               ))}
             </div>
-          ) : (
-            <div className={`px-6 py-4 text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-              No recent weight entries. Start logging your weight today!
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

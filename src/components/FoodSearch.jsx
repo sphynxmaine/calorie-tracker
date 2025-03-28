@@ -1,75 +1,220 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useTheme } from '../context/ThemeContext';
-import { auth, db } from '../firebase';
+import { auth, db, standardizeFoodData, fetchFoods } from '../firebase';
 import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import australianFoodData from '../data/australianFoodDatabase';
 import FoodContributionForm from './FoodContributionForm';
 import AddFoodToDiaryModal from './AddFoodToDiaryModal';
+import { debounce } from '../utils/helpers';
+
+// Create a cache for food search results to improve performance
+const foodSearchCache = {};
 
 const FoodSearch = ({ onSelectFood, initialMeal = 'breakfast' }) => {
   const { isDarkMode } = useTheme();
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState([]);
+  const [recentFoods, setRecentFoods] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFood, setSelectedFood] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAddingFood, setIsAddingFood] = useState(false);
 
+  // Fetch recent foods on component mount
+  useEffect(() => {
+    fetchRecentFoods();
+  }, []);
+
+  // Fetch recent foods the user has added to their diary
+  const fetchRecentFoods = async () => {
+    try {
+      const userId = auth.currentUser?.uid;
+      if (!userId) return;
+      
+      // Get the 10 most recent food entries
+      const recentFoodsQuery = query(
+        collection(db, "foodEntries"),
+        where("userId", "==", userId),
+        orderBy("createdAt", "desc"),
+        limit(10)
+      );
+      
+      const snapshot = await getDocs(recentFoodsQuery);
+      
+      // Create a map to deduplicate foods by name
+      const foodsMap = new Map();
+      
+      snapshot.forEach(doc => {
+        const food = standardizeFoodData(doc.data());
+        // Use foodName as key to avoid duplicates
+        if (!foodsMap.has(food.foodName)) {
+          foodsMap.set(food.foodName, food);
+        }
+      });
+      
+      // Convert map to array and limit to 5 items
+      const recentFoodsList = Array.from(foodsMap.values()).slice(0, 5);
+      setRecentFoods(recentFoodsList);
+    } catch (error) {
+      console.error("Error fetching recent foods:", error);
+    }
+  };
+
+  // Create a debounced search function for better performance
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const debouncedSearch = useCallback(
+    debounce(async (term) => {
+      if (term.length < 2) {
+        setSearchResults([]);
+        setIsLoading(false);
+        return;
+      }
+      
+      fetchFoodsForSearch(term);
+    }, 300),
+    []
+  );
+
   // Effect for search
   useEffect(() => {
-    const delaySearch = setTimeout(() => {
-      if (searchTerm.length >= 2) {
-        fetchFoods(searchTerm, setSearchResults, setIsLoading);
-      } else {
-        setSearchResults([]);
+    if (searchTerm.length >= 2) {
+      setIsLoading(true);
+      debouncedSearch(searchTerm);
+    } else {
+      setSearchResults([]);
+    }
+  }, [searchTerm, debouncedSearch]);
+
+  // Function to search foods
+  const fetchFoodsForSearch = async (term) => {
+    try {
+      setIsLoading(true);
+      
+      // Check cache first
+      const cacheKey = `search_${term.toLowerCase()}`;
+      if (foodSearchCache[cacheKey] && foodSearchCache[cacheKey].timestamp > Date.now() - 300000) {
+        setSearchResults(foodSearchCache[cacheKey].data);
+        setIsLoading(false);
+        return;
       }
-    }, 500);
-    
-    return () => clearTimeout(delaySearch);
-  }, [searchTerm]);
+      
+      // Search Australian food database
+      const searchTermLower = term.toLowerCase();
+      const results = [];
+      
+      // Add foods from the Australian database that match
+      const ausResults = Object.values(australianFoodData)
+        .filter(food => 
+          food.name.toLowerCase().includes(searchTermLower) || 
+          (food.brand && food.brand.toLowerCase().includes(searchTermLower))
+        )
+        .slice(0, 20) // Limit to 20 results
+        .map(food => standardizeFoodData({
+          ...food,
+          id: food.id || `aus-${Math.random().toString(36).substr(2, 9)}`,
+          source: 'australian',
+          country: 'australia'
+        }));
+      
+      results.push(...ausResults);
+      
+      // Get user foods from Firebase using the standardized fetchFoods function
+      const userFoods = await fetchFoods(term, 20);
+      results.push(...userFoods);
+      
+      // Sort results by relevance
+      const sortedResults = results
+        .filter(food => food !== null) // Filter out null values
+        .sort((a, b) => {
+          // Exact matches first
+          const aExact = a.name.toLowerCase() === searchTermLower;
+          const bExact = b.name.toLowerCase() === searchTermLower;
+          
+          if (aExact && !bExact) return -1;
+          if (!aExact && bExact) return 1;
+          
+          // Then starts with search term
+          const aStartsWith = a.name.toLowerCase().startsWith(searchTermLower);
+          const bStartsWith = b.name.toLowerCase().startsWith(searchTermLower);
+          
+          if (aStartsWith && !bStartsWith) return -1;
+          if (!aStartsWith && bStartsWith) return 1;
+          
+          // Then alphabetical
+          return a.name.localeCompare(b.name);
+        });
+      
+      // Limit to 30 results total to avoid overwhelming the UI
+      const limitedResults = sortedResults.slice(0, 30);
+      
+      // Cache the results
+      foodSearchCache[cacheKey] = {
+        timestamp: Date.now(),
+        data: limitedResults
+      };
+      
+      setSearchResults(limitedResults);
+      setIsLoading(false);
+    } catch (error) {
+      console.error("Error searching foods:", error);
+      setIsLoading(false);
+    }
+  };
 
   // Handle food selection
   const handleSelectFood = (food) => {
-    setSelectedFood(food);
+    setSelectedFood(standardizeFoodData(food));
     setIsModalOpen(true);
   };
 
-  // Country badge display component
+  // Handle adding a new food
+  const handleAddFood = (food) => {
+    setIsAddingFood(false);
+    setSelectedFood(standardizeFoodData(food));
+    setIsModalOpen(true);
+  };
+
+  // Handle food saved to diary
+  const handleFoodSaved = (savedFood) => {
+    // Update recent foods
+    fetchRecentFoods();
+    
+    // Call parent callback if provided
+    if (onSelectFood) {
+      onSelectFood(savedFood);
+    }
+    
+    // Close the modal
+    setIsModalOpen(false);
+    setSelectedFood(null);
+  };
+
+  // Country badge component
   const CountryBadge = ({ country }) => {
-    // Get country display name and color
-    const getCountryDisplay = (country) => {
-      switch(country) {
-        case 'australia':
-          return { name: 'AUS', color: 'bg-green-100 text-green-800' };
-        case 'unitedStates':
-          return { name: 'USA', color: 'bg-blue-100 text-blue-800' };
-        case 'unitedKingdom':
-          return { name: 'UK', color: 'bg-red-100 text-red-800' };
-        case 'canada':
-          return { name: 'CAN', color: 'bg-red-100 text-red-800' };
-        case 'newZealand':
-          return { name: 'NZ', color: 'bg-black text-white' };
-        case 'personal':
-          return { name: 'My Food', color: 'bg-purple-100 text-purple-800' };
-        case 'other':
-        default:
-          return { name: 'OTHER', color: 'bg-gray-100 text-gray-800' };
+    // Get country display data
+    const getCountryDisplay = (countryCode) => {
+      switch(countryCode) {
+        case 'australia': return { name: 'AUS', color: 'bg-green-100 text-green-800' };
+        case 'unitedStates': return { name: 'USA', color: 'bg-blue-100 text-blue-800' };
+        case 'unitedKingdom': return { name: 'UK', color: 'bg-red-100 text-red-800' };
+        case 'canada': return { name: 'CAN', color: 'bg-red-100 text-red-800' };
+        case 'newZealand': return { name: 'NZ', color: 'bg-black text-white' };
+        case 'personal': return { name: 'MY', color: 'bg-purple-100 text-purple-800' };
+        default: return { name: 'OTHER', color: 'bg-gray-100 text-gray-800' };
       }
     };
     
-    const countryDisplay = getCountryDisplay(country);
+    const display = getCountryDisplay(country);
     
     return (
-      <span className={`px-2 py-1 rounded-full text-xs ${
-        isDarkMode ? 'bg-gray-700 text-gray-300' : countryDisplay.color
-      }`}>
-        {countryDisplay.name}
+      <span className={`px-2 py-1 rounded-full text-xs ${isDarkMode ? 'bg-gray-700 text-gray-300' : display.color}`}>
+        {display.name}
       </span>
     );
   };
 
   // Food item display component
-  const FoodItem = ({ food, onSelect }) => {
+  const FoodItem = ({ food, onSelect, isRecent = false }) => {
     return (
       <div 
         className={`flex items-center p-3 cursor-pointer ${
@@ -81,13 +226,20 @@ const FoodSearch = ({ onSelectFood, initialMeal = 'breakfast' }) => {
       >
         <div className="flex-1">
           <div className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-            {food.name} {food.brand && <span className="text-gray-500">({food.brand})</span>}
+            {food.displayName} {food.brand && <span className="text-gray-500">({food.brand})</span>}
           </div>
           <div className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
             {food.servingSize || 100}{food.servingUnit || 'g'} · {food.calories || 0} cal
           </div>
         </div>
         <div className="flex items-center space-x-2">
+          {isRecent && (
+            <span className={`px-2 py-1 rounded-full text-xs ${
+              isDarkMode ? 'bg-yellow-900 text-yellow-200' : 'bg-yellow-100 text-yellow-800'
+            }`}>
+              Recent
+            </span>
+          )}
           {food.source === 'custom' && (
             <span className={`px-2 py-1 rounded-full text-xs ${
               isDarkMode ? 'bg-purple-900 text-purple-200' : 'bg-purple-100 text-purple-800'
@@ -95,7 +247,7 @@ const FoodSearch = ({ onSelectFood, initialMeal = 'breakfast' }) => {
               Custom
             </span>
           )}
-          {food.source === 'user' && (
+          {food.source === 'community' && (
             <span className={`px-2 py-1 rounded-full text-xs ${
               isDarkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-800'
             }`}>
@@ -106,121 +258,6 @@ const FoodSearch = ({ onSelectFood, initialMeal = 'breakfast' }) => {
         </div>
       </div>
     );
-  };
-
-  // Search function that includes all foods
-  const fetchFoods = async (searchTerm) => {
-    try {
-      setIsLoading(true);
-      const results = [];
-      
-      // Skip search if term is too short
-      if (!searchTerm || searchTerm.length < 2) {
-        setSearchResults([]);
-        setIsLoading(false);
-        return;
-      }
-      
-      // Search term preparation
-      const searchTermLower = searchTerm.toLowerCase();
-      
-      // Add foods from the Australian database that match
-      const ausResults = Object.values(australianFoodData)
-        .filter(food => 
-          food.name.toLowerCase().includes(searchTermLower) || 
-          (food.brand && food.brand.toLowerCase().includes(searchTermLower))
-        )
-        .slice(0, 30) // Limit to 30 results
-        .map(food => ({
-          ...food,
-          id: food.id || `aus-${Math.random().toString(36).substr(2, 9)}`,
-          source: 'australian',
-          country: 'australia'
-        }));
-      
-      results.push(...ausResults);
-      
-      // Search user-contributed foods in Firestore
-      const userId = auth.currentUser?.uid;
-      if (userId) {
-        // Get approved user foods (from all countries)
-        const userFoodsQuery = query(
-          collection(db, "userFoods"),
-          where("approved", "==", true),
-          limit(30)
-        );
-        
-        const userFoodsSnapshot = await getDocs(userFoodsQuery);
-        const userFoods = userFoodsSnapshot.docs
-          .filter(doc => {
-            const food = doc.data();
-            return food.name.toLowerCase().includes(searchTermLower) ||
-                  (food.brand && food.brand.toLowerCase().includes(searchTermLower));
-          })
-          .map(doc => ({
-            ...doc.data(),
-            id: doc.id,
-            source: 'user',
-            country: doc.data().country || 'other'
-          }));
-        
-        // Add user's own custom foods
-        const customFoodsQuery = query(
-          collection(db, "customFoods"),
-          where("userId", "==", userId),
-          limit(30)
-        );
-        
-        const customFoodsSnapshot = await getDocs(customFoodsQuery);
-        const customFoods = customFoodsSnapshot.docs
-          .filter(doc => {
-            const food = doc.data();
-            return food.name.toLowerCase().includes(searchTermLower) ||
-                  (food.brand && food.brand.toLowerCase().includes(searchTermLower));
-          })
-          .map(doc => ({
-            ...doc.data(),
-            id: doc.id,
-            source: 'custom',
-            country: 'personal'
-          }));
-        
-        results.push(...userFoods, ...customFoods);
-      }
-      
-      // Sort results by relevance
-      const sortedResults = results.sort((a, b) => {
-        // Exact matches first
-        const aExact = a.name.toLowerCase() === searchTermLower;
-        const bExact = b.name.toLowerCase() === searchTermLower;
-        
-        if (aExact && !bExact) return -1;
-        if (!aExact && bExact) return 1;
-        
-        // Then starts with search term
-        const aStartsWith = a.name.toLowerCase().startsWith(searchTermLower);
-        const bStartsWith = b.name.toLowerCase().startsWith(searchTermLower);
-        
-        if (aStartsWith && !bStartsWith) return -1;
-        if (!aStartsWith && bStartsWith) return 1;
-        
-        // Then alphabetical
-        return a.name.localeCompare(b.name);
-      });
-      
-      setSearchResults(sortedResults.slice(0, 50)); // Limit to top 50 results
-    } catch (error) {
-      console.error("Error searching foods:", error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Handle adding a new food
-  const handleAddFood = (food) => {
-    setIsAddingFood(false);
-    setSelectedFood(food);
-    setIsModalOpen(true);
   };
 
   return (
@@ -267,6 +304,29 @@ const FoodSearch = ({ onSelectFood, initialMeal = 'breakfast' }) => {
             </div>
           </div>
 
+          {/* Recent Foods Section */}
+          {searchTerm.length < 2 && recentFoods.length > 0 && (
+            <div className={`rounded-lg overflow-hidden ${
+              isDarkMode ? 'bg-gray-800' : 'bg-white'
+            } shadow-lg mb-4`}>
+              <div className={`p-3 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-50'} border-b ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`}>
+                <h3 className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                  Recent Foods
+                </h3>
+              </div>
+              <div className="max-h-60 overflow-y-auto">
+                {recentFoods.map(food => (
+                  <FoodItem 
+                    key={`recent-${food.id}`} 
+                    food={food} 
+                    onSelect={handleSelectFood}
+                    isRecent={true}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
           {isLoading ? (
             <div className="flex justify-center py-4">
               <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500"></div>
@@ -276,7 +336,11 @@ const FoodSearch = ({ onSelectFood, initialMeal = 'breakfast' }) => {
               isDarkMode ? 'bg-gray-800' : 'bg-white'
             } shadow-lg`}>
               {searchResults.map(food => (
-                <FoodItem key={food.id} food={food} onSelect={handleSelectFood} />
+                <FoodItem 
+                  key={food.id} 
+                  food={food} 
+                  onSelect={handleSelectFood}
+                />
               ))}
             </div>
           ) : searchTerm.length >= 2 ? (
@@ -319,13 +383,7 @@ const FoodSearch = ({ onSelectFood, initialMeal = 'breakfast' }) => {
             setIsModalOpen(false);
             setSelectedFood(null);
           }}
-          onSave={(foodEntry) => {
-            if (onSelectFood) {
-              onSelectFood(foodEntry);
-            }
-            setIsModalOpen(false);
-            setSelectedFood(null);
-          }}
+          onSave={handleFoodSaved}
         />
       )}
     </div>
