@@ -1,0 +1,166 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Dark mode and light mode globals */
+:root {
+  --bg-primary: #FFFFFF;
+  --bg-secondary: #F3F4F6;
+  --bg-tertiary: #E5E7EB;
+  --text-primary: #111827;
+  --text-secondary: #4B5563;
+  --border-color: #D1D5DB;
+}
+
+.dark-mode {
+  --bg-primary: #111827;
+  --bg-secondary: #1F2937;
+  --bg-tertiary: #374151;
+  --text-primary: #F9FAFB;
+  --text-secondary: #D1D5DB;
+  --border-color: #4B5563;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+input, textarea, select {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+button:not([class*="bg-"]) {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+/* Animation keyframes for notifications */
+@keyframes slideInUp {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Plus button bounce animation */
+@keyframes bounce {
+  0%, 100% { 
+    transform: translateY(0);
+  }
+  50% { 
+    transform: translateY(-5px);
+  }
+}
+
+/* Button bounce animation */
+@keyframes btnBounce {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(0.95);
+  }
+}
+
+.btn-bounce:active {
+  animation: btnBounce 0.3s ease;
+}
+
+/* Enhanced button styles */
+.btn-primary {
+  @apply bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md shadow-sm transition-all duration-200;
+}
+
+.btn-secondary {
+  @apply bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium rounded-md shadow-sm transition-all duration-200 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-white;
+}
+
+.btn-danger {
+  @apply bg-red-600 hover:bg-red-700 text-white font-medium rounded-md shadow-sm transition-all duration-200;
+}
+
+.btn-success {
+  @apply bg-green-600 hover:bg-green-700 text-white font-medium rounded-md shadow-sm transition-all duration-200;
+}
+
+/* Card styles */
+.card {
+  @apply p-4 rounded-lg shadow transition-all duration-200;
+  @apply dark:bg-gray-800 bg-white;
+  @apply hover:shadow-md;
+}
+
+/* Form control styles */
+.form-control {
+  @apply block w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500;
+  @apply dark:border-gray-700 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400;
+  @apply border-gray-300 placeholder-gray-500 text-gray-900;
+}
+
+/* Mobile layout optimizations */
+.mobile-container {
+  max-width: 100%;
+  padding: 0 16px;
+  margin: 0 auto;
+  padding-bottom: 70px; /* Make room for bottom navbar */
+}
+
+/* iPhone simulator styles */
+.iphone-simulator {
+  width: 375px;
+  height: 812px;
+  margin: 0 auto;
+  overflow: auto;
+  border: 12px solid #1f1f1f;
+  border-radius: 40px;
+  position: relative;
+}
+
+.iphone-simulator::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 150px;
+  height: 20px;
+  background-color: #1f1f1f;
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+  z-index: 10;
+}
+
+/* Bottom mobile navbar styles */
+.mobile-navbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 64px;
+  z-index: 50;
+  transition: all 0.3s ease;
+}
+
+/* Loader element */
+.loader {
+  @apply inline-block animate-spin rounded-full border-t-2 border-b-2 border-blue-500;
+  width: 2rem;
+  height: 2rem;
+}

@@ -1,0 +1,41 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow users to read all shared foods
+    match /sharedFoods/{document=**} {
+      allow read: if request.auth != null;
+      
+      // Allow users to create shared foods
+      allow create: if request.auth != null && 
+                     request.resource.data.createdBy == request.auth.uid;
+      
+      // Allow users to update or delete only their own foods
+      allow update, delete: if request.auth != null && 
+                             resource.data.createdBy == request.auth.uid;
+    }
+    
+    // Allow users to manage their own food entries
+    match /foodEntries/{document=**} {
+      allow read, write: if request.auth != null && 
+                           request.auth.uid == resource.data.userId;
+    }
+    
+    // Allow users to manage their own custom foods
+    match /userFoods/{document=**} {
+      allow read, write: if request.auth != null && 
+                           request.auth.uid == resource.data.userId;
+    }
+    
+    // Allow users to read and write their own profile
+    match /userProfiles/{userId} {
+      allow read, write: if request.auth != null && 
+                           request.auth.uid == userId;
+    }
+    
+    // Allow users to read system config
+    match /systemConfig/{document=**} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only admins can write (handled by admin functions)
+    }
+  }
+} 

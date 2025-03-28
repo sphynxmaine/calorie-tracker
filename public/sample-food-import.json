@@ -1,0 +1,67 @@
+[
+  {
+    "itemName": "Homemade Granola",
+    "category": "Breakfast Cereal",
+    "weight": "100g",
+    "calories": 450,
+    "protein": 10,
+    "fat": 20,
+    "carbs": 55,
+    "fiber": 8,
+    "sugar": 15,
+    "sodium": 10,
+    "description": "Homemade granola with oats, nuts, and honey"
+  },
+  {
+    "itemName": "Avocado Toast",
+    "category": "Breakfast",
+    "weight": "1 slice",
+    "calories": 220,
+    "protein": 5,
+    "fat": 15,
+    "carbs": 18,
+    "fiber": 6,
+    "sugar": 1,
+    "sodium": 180,
+    "description": "Whole grain toast with mashed avocado"
+  },
+  {
+    "itemName": "Greek Yogurt with Berries",
+    "category": "Breakfast",
+    "weight": "200g",
+    "calories": 180,
+    "protein": 15,
+    "fat": 5,
+    "carbs": 20,
+    "fiber": 3,
+    "sugar": 15,
+    "sodium": 70,
+    "description": "Plain Greek yogurt topped with mixed berries"
+  },
+  {
+    "itemName": "Chicken Quinoa Bowl",
+    "category": "Lunch",
+    "weight": "350g",
+    "calories": 420,
+    "protein": 30,
+    "fat": 12,
+    "carbs": 45,
+    "fiber": 7,
+    "sugar": 3,
+    "sodium": 320,
+    "description": "Grilled chicken with quinoa, vegetables, and tahini dressing"
+  },
+  {
+    "itemName": "Lentil Soup",
+    "category": "Soup",
+    "weight": "250ml",
+    "calories": 180,
+    "protein": 12,
+    "fat": 4,
+    "carbs": 30,
+    "fiber": 8,
+    "sugar": 4,
+    "sodium": 480,
+    "description": "Homemade lentil soup with vegetables and herbs"
+  }
+] 
