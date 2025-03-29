@@ -10,7 +10,9 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
-  connectFirestoreEmulator
+  connectFirestoreEmulator,
+  Timestamp,
+  serverTimestamp
 } from 'firebase/firestore';
 import { 
   getAuth, 
@@ -19,17 +21,20 @@ import {
   connectAuthEmulator
 } from 'firebase/auth';
 import { addDoc, collection, query, where, limit, getDocs } from 'firebase/firestore';
+import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
+import { v4 as uuidv4 } from 'uuid';
 
 // Environment detection
 const isDevelopment = process.env.NODE_ENV === 'development';
 const isLocalhost = typeof window !== 'undefined' && window.location.hostname === 'localhost';
 
 // Your web app's Firebase configuration
+// Instead of using environment variables which might be missing, use a direct configuration
 const firebaseConfig = {
   apiKey: "AIzaSyCahyldtStQ3EFODXp6mxMDwjuwzoMu91I",
   authDomain: "calorie-tracker-1b499.firebaseapp.com",
   projectId: "calorie-tracker-1b499",
-  storageBucket: "calorie-tracker-1b499.appspot.com",
+  storageBucket: "calorie-tracker-1b499.firebasestorage.app",
   messagingSenderId: "226403177723",
   appId: "1:226403177723:web:dcbfc8b034578f532a0c5e",
   measurementId: "G-RB271GGTHS"
@@ -166,20 +171,29 @@ const initializeAuth = (app) => {
     }
     
     // Set persistence to LOCAL
-    console.log('Setting Auth persistence to local...');
-    setPersistence(auth, browserLocalPersistence)
-      .then(() => {
-        console.log("Auth persistence set to local successfully");
-      })
-      .catch((error) => {
-        console.error("Error setting auth persistence:", error);
-      });
+    // Wrap this in a try-catch to prevent initialization failures
+    try {
+      console.log('Setting Auth persistence to local...');
+      setPersistence(auth, browserLocalPersistence)
+        .then(() => {
+          console.log("Auth persistence set to local successfully");
+        })
+        .catch((error) => {
+          console.error("Error setting auth persistence:", error);
+          // Just log this error but don't throw - auth will still work
+        });
+    } catch (persistenceError) {
+      console.error("Error setting auth persistence:", persistenceError);
+      // Continue without persistence
+    }
     
     return auth;
   } catch (error) {
     console.error("Error initializing Firebase Auth:", error);
     showErrorToUser("Failed to initialize authentication. Please try again later.");
-    throw error;
+    // Return a placeholder auth instead of throwing to prevent app from crashing
+    console.warn("Returning default Auth instance to prevent app crash");
+    return getAuth();
   }
 };
 
@@ -199,19 +213,136 @@ const showErrorToUser = (message) => {
 };
 
 // Initialize Firebase services
-console.log('Starting Firebase initialization...');
-const app = initializeFirebaseApp();
-let analytics = null;
-const db = initializeFirestoreDB(app);
-const auth = initializeAuth(app);
+console.log('Starting Firebase initialization with project ID:', firebaseConfig.projectId);
+let app, db, auth, functions, analytics = null;
 
-// Initialize analytics asynchronously
-initializeAnalytics(app).then(result => {
-  analytics = result;
-});
+try {
+  app = initializeFirebaseApp();
+  db = initializeFirestoreDB(app);
+  auth = initializeAuth(app);
+  functions = getFunctions(app);
+  
+  // Initialize analytics asynchronously
+  initializeAnalytics(app).then(result => {
+    analytics = result;
+    console.log('Analytics initialization complete');
+  }).catch(error => {
+    console.warn('Analytics initialization failed, but app will continue to work:', error);
+  });
+  
+  console.log('Firebase core services initialized successfully');
+} catch (error) {
+  console.error('Critical error during Firebase initialization:', error);
+  showErrorToUser('There was an error connecting to our services. Some features may be limited.');
+  
+  // Fallback initialization to prevent the app from breaking completely
+  try {
+    if (!app) app = initializeApp(firebaseConfig);
+    if (!db) db = getFirestore(app);
+    if (!auth) auth = getAuth(app);
+    if (!functions) functions = getFunctions(app);
+    console.log('Fallback Firebase initialization complete');
+  } catch (fallbackError) {
+    console.error('Even fallback initialization failed:', fallbackError);
+  }
+}
 
 console.log('Firebase initialization complete');
 console.log('Using emulators:', useEmulators);
+
+// Use emulators for local development only if explicitly enabled
+if (useEmulators) {
+  connectAuthEmulator(auth, 'http://localhost:9099');
+  connectFirestoreEmulator(db, 'localhost', 8080);
+  connectFunctionsEmulator(functions, 'localhost', 5001);
+  console.log('Using Firebase emulators');
+}
+
+// Utility functions for standardizing food data
+
+/**
+ * Utility function to get the display name of a food item
+ * from various possible fields
+ */
+export const getFoodDisplayName = (food) => {
+  if (!food) return 'Unknown Food';
+  
+  // Check possible name fields in order of priority
+  return food.foodName || 
+         food.name || 
+         food.displayName ||
+         food.food?.foodName ||
+         food.food?.name ||
+         food.food?.displayName ||
+         'Unknown Food';
+};
+
+/**
+ * Standardize a food item to ensure consistent field names
+ * and formats across the application
+ */
+export const standardizeFoodItem = (food) => {
+  if (!food) return null;
+  
+  // Create a base standardized food object
+  const standardized = {
+    id: food.id || food.food?.id || uuidv4(),
+    foodName: getFoodDisplayName(food),
+    calories: Number(food.calories || food.food?.calories || 0),
+    protein: Number(food.protein || food.food?.protein || 0),
+    carbs: Number(food.carbs || food.food?.carbs || 0),
+    fat: Number(food.fat || food.food?.fat || 0),
+    quantity: Number(food.quantity || food.food?.quantity || 1),
+    servingSize: food.servingSize || food.food?.servingSize || 'serving',
+    source: food.source || 'database'
+  };
+  
+  // Preserve any other fields that might be useful
+  if (food.isShared !== undefined) standardized.isShared = food.isShared;
+  if (food.userId) standardized.userId = food.userId;
+  if (food.country) standardized.country = food.country;
+  if (food.createdAt) standardized.createdAt = food.createdAt;
+  
+  return standardized;
+};
+
+/**
+ * Prepare a food entry for saving to Firestore
+ * This creates a standardized format for all food entries
+ */
+export const prepareFoodEntry = ({ food, userId, mealType, date }) => {
+  // First standardize the food item
+  const standardizedFood = standardizeFoodItem(food);
+  
+  // Format the date string consistently
+  const dateObj = date instanceof Date ? date : new Date();
+  const dateString = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
+  const dateFormatted = new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric'
+  }).format(dateObj);
+  
+  // Create the entry with all needed fields
+  return {
+    userId,
+    food: standardizedFood,
+    foodName: standardizedFood.foodName,
+    calories: standardizedFood.calories,
+    protein: standardizedFood.protein,
+    carbs: standardizedFood.carbs,
+    fat: standardizedFood.fat,
+    quantity: standardizedFood.quantity,
+    servingSize: standardizedFood.servingSize,
+    mealType: mealType.toLowerCase(),
+    date: dateString,
+    dateFormatted,
+    createdAt: serverTimestamp(),
+    deleted: false,
+    displayName: standardizedFood.foodName, // For backward compatibility
+    id: uuidv4() // Unique ID for the entry
+  };
+};
 
 /**
  * Standardizes food data structure to ensure consistency across the app
@@ -400,5 +531,5 @@ export const fetchFoods = async (searchTerm = '', limit = 30) => {
   }
 };
 
-export { analytics, db, auth };
+export { analytics, db, auth, functions };
 export default app;

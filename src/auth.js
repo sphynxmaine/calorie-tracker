@@ -55,8 +55,33 @@ export const signUp = async (email, password, displayName, additionalData = {}) 
 export const signIn = async (email, password) => {
   try {
     console.log(`Attempting to sign in user: ${email}`);
-    const userCredential = await signInWithEmailAndPassword(auth, email, password);
-    console.log('Sign in successful:', userCredential.user.uid);
+    
+    // Make 3 attempts to sign in, with increasing delays between attempts
+    let userCredential;
+    let lastError;
+    
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        userCredential = await signInWithEmailAndPassword(auth, email, password);
+        console.log('Sign in successful:', userCredential.user.uid);
+        break; // Success, exit the loop
+      } catch (err) {
+        lastError = err;
+        console.error(`Sign in attempt ${attempt} failed:`, err.code, err.message);
+        
+        // Don't delay on the last attempt
+        if (attempt < 3) {
+          const delay = attempt * 1000; // Increasing delay for each attempt
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    
+    // If all attempts failed, throw the last error
+    if (!userCredential) {
+      throw lastError || new Error('Failed to sign in after multiple attempts');
+    }
     
     // Check if user has a profile
     try {
@@ -70,10 +95,15 @@ export const signIn = async (email, password) => {
         await createUserProfile(userCredential.user);
       } else {
         console.log('User profile found:', profileSnapshot.data());
+        
+        // Update last login timestamp without overwriting other data
+        try {
+          await updateUserLastLogin(userCredential.user);
+        } catch (loginError) {
+          console.error('Error updating last login:', loginError);
+          // Continue anyway
+        }
       }
-      
-      // Update last login timestamp
-      await updateUserLastLogin(userCredential.user);
     } catch (profileError) {
       console.error('Error checking/creating user profile:', profileError);
       // Continue anyway - don't block login due to profile issues
@@ -92,11 +122,18 @@ export const signIn = async (email, password) => {
       errorMessage = 'Too many failed login attempts. Please try again later.';
     } else if (error.code === 'auth/network-request-failed') {
       errorMessage = 'Network error. Please check your internet connection.';
+    } else if (error.code === 'auth/user-disabled') {
+      errorMessage = 'This account has been disabled. Please contact support.';
+    } else if (error.code === 'auth/operation-not-allowed') {
+      errorMessage = 'Login is temporarily unavailable. Please try again later.';
+    } else if (error.code === 'auth/api-key-not-valid') {
+      errorMessage = 'Authentication service configuration error. Please contact support.';
     }
     
     // Throw a more user-friendly error
     const enhancedError = new Error(errorMessage);
     enhancedError.originalError = error;
+    enhancedError.code = error.code;
     throw enhancedError;
   }
 };

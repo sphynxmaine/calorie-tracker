@@ -6,6 +6,7 @@ import { collection, addDoc, query, where, orderBy, getDocs, limit, doc, getDoc,
 import PageHeader from '../components/PageHeader';
 import { format } from 'date-fns';
 import { formatDate, generateUniqueId, formatDisplayDate, getTodayAtMidnight, calculateBMI, getBMICategory } from '../utils/helpers';
+import { LoadingButton } from '../components/LoadingState';
 
 const LogWeightPage = () => {
   const { isDarkMode } = useTheme();
@@ -19,6 +20,7 @@ const LogWeightPage = () => {
   const [success, setSuccess] = useState('');
   const [lastEntries, setLastEntries] = useState([]);
   const [hasExistingEntryForToday, setHasExistingEntryForToday] = useState(false);
+  const [existingEntryId, setExistingEntryId] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
 
   useEffect(() => {
@@ -43,9 +45,18 @@ const LogWeightPage = () => {
         if (userData.weightUnit) {
           setWeightUnit(userData.weightUnit);
         }
+        
+        // If we don't have a weight set yet and there's a current weight in profile, use it
+        if (!weight && userData.currentWeight) {
+          const weightValue = userData.weightUnit === 'lbs' 
+            ? (userData.currentWeight * 2.205).toFixed(1) 
+            : userData.currentWeight.toFixed(1);
+          setWeight(weightValue);
+        }
       }
     } catch (error) {
       console.error('Error fetching user profile:', error);
+      setError('Failed to load user profile data');
     }
   };
   
@@ -58,8 +69,9 @@ const LogWeightPage = () => {
       const q = query(
         weightLogsRef,
         where('userId', '==', userId),
-        orderBy('date', 'desc'),
-        limit(5)
+        where('deleted', '==', false),
+        orderBy('dateFormatted', 'desc'),
+        limit(10)
       );
       
       const querySnapshot = await getDocs(q);
@@ -69,16 +81,32 @@ const LogWeightPage = () => {
       
       querySnapshot.forEach((doc) => {
         const entry = doc.data();
+        
+        // Ensure date is in a consistent format for display
+        let displayDate = '';
+        if (entry.dateFormatted) {
+          displayDate = formatDisplayDate(new Date(entry.dateFormatted));
+        } else if (entry.date instanceof Timestamp) {
+          displayDate = formatDisplayDate(entry.date.toDate());
+        } else {
+          displayDate = formatDisplayDate(new Date(entry.date));
+        }
+        
         entries.push({
           id: doc.id,
           ...entry,
-          displayDate: formatDisplayDate(entry.date.toDate())
+          displayDate
         });
         
         // Check if there's an entry for today
-        const entryDate = formatDate(entry.date.toDate());
+        const entryDate = entry.dateFormatted || 
+          (entry.date instanceof Timestamp ? 
+            formatDate(entry.date.toDate()) : 
+            formatDate(new Date(entry.date)));
+            
         if (entryDate === today) {
           todayEntry = entry;
+          setExistingEntryId(doc.id);
         }
       });
       
@@ -88,10 +116,12 @@ const LogWeightPage = () => {
       // If there's an entry for today, pre-fill the form
       if (todayEntry) {
         setWeight(String(todayEntry.weight));
+        setWeightUnit(todayEntry.weightUnit || 'kg');
         setNotes(todayEntry.notes || '');
       }
     } catch (error) {
       console.error('Error fetching weight logs:', error);
+      setError('Failed to load weight history');
     }
   };
 
@@ -114,47 +144,38 @@ const LogWeightPage = () => {
         return false;
       }
       
-      const weightLogId = generateUniqueId();
-      const weightInKg = weightUnit === 'lbs' ? numWeight / 2.205 : numWeight;
-      
       // Format the date consistently
       const selectedDate = new Date(date);
-      const timestamp = selectedDate;
+      const timestamp = Timestamp.fromDate(selectedDate);
+      const dateFormatted = formatDate(selectedDate);
       
-      // Check if we already have an entry for this date
-      const todayFormatted = formatDate(selectedDate);
-      const weightLogsRef = collection(db, 'weightLogs');
-      const q = query(
-        weightLogsRef,
-        where('userId', '==', userId),
-        where('dateFormatted', '==', todayFormatted)
-      );
-      
-      const querySnapshot = await getDocs(q);
+      // Prepare weight data
+      const weightInKg = weightUnit === 'lbs' ? numWeight / 2.205 : numWeight;
+      const weightData = {
+        userId,
+        weight: numWeight,
+        weightInKg,
+        weightUnit,
+        date: timestamp,
+        dateFormatted,
+        notes,
+        deleted: false,
+        updatedAt: Timestamp.now()
+      };
       
       let docRef;
-      if (!querySnapshot.empty) {
+      
+      if (hasExistingEntryForToday && existingEntryId) {
         // Update existing entry
-        docRef = doc(db, 'weightLogs', querySnapshot.docs[0].id);
-        await updateDoc(docRef, {
-          weight: numWeight,
-          weightInKg,
-          notes,
-          updatedAt: new Date()
-        });
+        docRef = doc(db, 'weightLogs', existingEntryId);
+        await updateDoc(docRef, weightData);
       } else {
-        // Create new entry
+        // Create new entry with a unique ID
+        const weightLogId = generateUniqueId();
         docRef = doc(db, 'weightLogs', weightLogId);
         await setDoc(docRef, {
-          userId,
-          weight: numWeight,
-          weightInKg,
-          weightUnit,
-          date: timestamp,
-          dateFormatted: todayFormatted,
-          notes,
-          createdAt: new Date(),
-          updatedAt: new Date()
+          ...weightData,
+          createdAt: Timestamp.now()
         });
       }
       
@@ -169,7 +190,7 @@ const LogWeightPage = () => {
   const updateUserProfile = async (weightInKg) => {
     try {
       const userId = auth.currentUser?.uid;
-      if (!userId || !userProfile) return;
+      if (!userId || !userProfile) return false;
       
       const userRef = doc(db, 'users', userId);
       
@@ -186,7 +207,8 @@ const LogWeightPage = () => {
         weightUnit,
         bmi,
         bmiCategory,
-        updatedAt: new Date()
+        lastWeightUpdate: Timestamp.now(),
+        updatedAt: Timestamp.now()
       });
       
       return true;
@@ -267,19 +289,22 @@ const LogWeightPage = () => {
       }
       
       setIsLoading(true);
+      
+      // Instead of permanently deleting, mark as deleted
       await updateDoc(doc(db, 'weightLogs', logId), {
         deleted: true,
-        updatedAt: new Date()
+        updatedAt: Timestamp.now()
       });
       
       setSuccess('Weight log deleted');
       fetchLastEntries(); // Refresh the list
       
       // If we deleted today's entry, reset the form
-      if (hasExistingEntryForToday) {
+      if (hasExistingEntryForToday && logId === existingEntryId) {
         setWeight('');
         setNotes('');
         setHasExistingEntryForToday(false);
+        setExistingEntryId(null);
       }
       
       setIsLoading(false);
@@ -291,7 +316,7 @@ const LogWeightPage = () => {
   };
 
   return (
-    <div className={`min-h-screen ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
+    <div className={`min-h-screen pb-24 ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
       <PageHeader 
         title="Log Weight" 
         showBackButton={true}
@@ -299,13 +324,13 @@ const LogWeightPage = () => {
       
       <div className="container mx-auto px-4 py-8 max-w-md">
         {error && (
-          <div className="mb-4 p-3 bg-red-100 text-red-800 rounded-md">
+          <div className={`mb-4 p-3 rounded-md ${isDarkMode ? 'bg-red-900 text-red-100' : 'bg-red-100 text-red-800'}`}>
             {error}
           </div>
         )}
         
         {success && (
-          <div className="mb-4 p-3 bg-green-100 text-green-800 rounded-md">
+          <div className={`mb-4 p-3 rounded-md ${isDarkMode ? 'bg-green-900 text-green-100' : 'bg-green-100 text-green-800'}`}>
             {success}
           </div>
         )}
@@ -398,27 +423,14 @@ const LogWeightPage = () => {
               />
             </div>
             
-            <button
+            <LoadingButton
               type="submit"
+              isLoading={isLoading}
+              loadingText="Saving..."
+              defaultText={hasExistingEntryForToday ? 'Update Weight' : 'Log Weight'}
               disabled={isLoading}
-              className={`w-full py-2 px-4 rounded font-medium ${
-                isLoading
-                  ? 'bg-gray-400 cursor-not-allowed'
-                  : isDarkMode
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                  : 'bg-blue-500 hover:bg-blue-600 text-white'
-              }`}
-            >
-              {isLoading ? (
-                <span className="flex items-center justify-center">
-                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Saving...
-                </span>
-              ) : hasExistingEntryForToday ? 'Update Weight' : 'Log Weight'}
-            </button>
+              className="w-full py-2"
+            />
           </form>
         </div>
         
@@ -449,7 +461,7 @@ const LogWeightPage = () => {
                   <div>
                     <div className="font-medium">{entry.displayDate}</div>
                     <div className="text-sm opacity-75">
-                      {entry.weight} {entry.weightUnit}
+                      {entry.weight} {entry.weightUnit || 'kg'}
                       {entry.notes && (
                         <span className="ml-2">- {entry.notes.length > 20 ? `${entry.notes.substring(0, 20)}...` : entry.notes}</span>
                       )}

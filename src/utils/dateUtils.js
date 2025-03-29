@@ -21,6 +21,43 @@ export const formatDate = (date, includeDay = true) => {
 };
 
 /**
+ * Formats a date specifically for display in the dashboard header
+ * @param {Date} date - The date to format
+ * @returns {string} Formatted date string for display
+ */
+export const formatDisplayDate = (date) => {
+  if (!date) return '';
+  
+  if (isToday(date)) {
+    return 'Today';
+  }
+  
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (date.getDate() === yesterday.getDate() &&
+      date.getMonth() === yesterday.getMonth() &&
+      date.getFullYear() === yesterday.getFullYear()) {
+    return 'Yesterday';
+  }
+  
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (date.getDate() === tomorrow.getDate() &&
+      date.getMonth() === tomorrow.getMonth() &&
+      date.getFullYear() === tomorrow.getFullYear()) {
+    return 'Tomorrow';
+  }
+  
+  // For other dates, use a more detailed format
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: date.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined
+  }).format(date);
+};
+
+/**
  * Checks if a date is today
  * @param {Date} date - The date to check
  * @returns {boolean} True if the date is today
@@ -77,4 +114,14 @@ export const formatDiaryDate = (date) => {
   }
   
   return formatDate(date);
+};
+
+/**
+ * Returns a new Date object set to today at midnight (00:00:00)
+ * @returns {Date} Today at midnight
+ */
+export const getTodayAtMidnight = () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
 }; 

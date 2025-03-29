@@ -103,24 +103,16 @@ The Firestore database has the following collections:
 
 ## Managing the Database
 
-The application includes an admin page for managing the food database:
+The database structure is automatically set up when the application is first run. You can manage the database in the following ways:
 
-1. **Access the Admin Page**:
-   - Navigate to `/admin` in your application
-   - Only users with admin privileges can access this page
+1. **Import Data**:
+   - Use the Firebase Console to import data manually
+   - Import using Firebase Admin SDK scripts in the `scripts` folder
+   - Use Firestore REST API or client libraries
 
-2. **Set Admin Privileges**:
-   - Open `src/pages/AdminPage.jsx`
-   - Update the `adminEmails` array with the email addresses of your admin users:
-   ```javascript
-   const adminEmails = ['your-email@example.com', 'another-admin@example.com'];
-   ```
-
-3. **Admin Features**:
-   - View database statistics
-   - Import foods from JSON or CSV files
-   - Export the entire database
-   - Clear the database (use with caution!)
+2. **Export Data**:
+   - Use Firebase Console to export data
+   - Use Firebase CLI: `firebase firestore:export`
 
 ## Importing Foods
 
@@ -133,11 +125,8 @@ You can import foods in bulk using JSON or CSV files:
    - Ensure your file has the required fields (itemName, calories)
 
 2. **Import Process**:
-   - Go to the Admin page
-   - In the "Import Foods" section, click "Choose File"
-   - Select your JSON or CSV file
-   - Click "Import Foods"
-   - Wait for the import to complete
+   - Use Firebase Console or CLI tools to import the data
+   - Or use the scripts provided in the `scripts` folder
 
 3. **JSON Format Example**:
 ```json
@@ -166,18 +155,11 @@ itemName,category,weight,calories,protein,fat,carbs,fiber,sugar,sodium,descripti
 
 ## Exporting Foods
 
-You can export the entire shared food database:
+You can export the entire shared food database using Firebase tools:
 
 1. **Export Process**:
-   - Go to the Admin page
-   - In the "Export Database" section, select the format (JSON or CSV)
-   - Click "Export Database"
-   - The file will be downloaded to your computer
-
-2. **Using Exported Data**:
-   - Use the exported data for backup purposes
-   - Modify the data and re-import it
-   - Share the data with other instances of the application
+   - Use Firebase Console to export collections
+   - Use Firebase CLI command: `firebase firestore:export`
 
 ## User Contributions
 

@@ -1,10 +1,11 @@
 // src/pages/Login.jsx
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { signIn, resetPassword, ensureDemoUserExists } from '../auth';
+import { signIn, resetPassword, ensureDemoUserExists, onAuthState } from '../auth';
 import { useTheme } from '../context/ThemeContext';
 import DarkModeToggle from '../components/DarkModeToggle';
+import { auth } from '../firebase';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -13,17 +14,70 @@ export default function Login() {
   const [error, setError] = useState('');
   const [resetSent, setResetSent] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [serviceStatus, setServiceStatus] = useState('checking'); // 'checking', 'online', 'offline'
   const { isDarkMode } = useTheme();
+
+  // Check if Firebase Auth service is available
+  useEffect(() => {
+    const checkAuth = async () => {
+      setServiceStatus('checking');
+      
+      try {
+        // Try to get the current user - this should work even if not signed in
+        const unsubscribe = onAuthState(() => {
+          console.log("Auth state check successful");
+          setServiceStatus('online');
+          unsubscribe();
+        });
+        
+        // If we don't get a status within 5 seconds, assume offline
+        const timeout = setTimeout(() => {
+          if (serviceStatus === 'checking') {
+            console.log("Auth service check timed out");
+            setServiceStatus('offline');
+          }
+        }, 5000);
+        
+        return () => {
+          clearTimeout(timeout);
+          unsubscribe();
+        };
+      } catch (error) {
+        console.error("Error checking auth service:", error);
+        setServiceStatus('offline');
+      }
+    };
+    
+    checkAuth();
+  }, []);
+
+  // Check if user is already logged in
+  useEffect(() => {
+    const checkUser = async () => {
+      if (auth.currentUser) {
+        navigate('/');
+      }
+    };
+    
+    checkUser();
+  }, [navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
+    if (serviceStatus === 'offline') {
+      setError('Authentication service is currently unavailable. Please try again later.');
+      setLoading(false);
+      return;
+    }
+
     try {
       await signIn(email, password);
       navigate('/');
     } catch (error) {
+      console.error('Login error:', error);
       setError(error.message);
       setLoading(false);
     }
@@ -35,18 +89,32 @@ export default function Login() {
       return;
     }
     
+    if (serviceStatus === 'offline') {
+      setError('Password reset service is currently unavailable. Please try again later.');
+      return;
+    }
+    
     try {
+      setLoading(true);
       await resetPassword(email);
       setResetSent(true);
       setError('');
     } catch (error) {
       setError(error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleDemoLogin = async () => {
     setLoading(true);
     setError('');
+    
+    if (serviceStatus === 'offline') {
+      setError('Authentication service is currently unavailable. Please try again later.');
+      setLoading(false);
+      return;
+    }
     
     // Use demo credentials
     try {
@@ -81,19 +149,50 @@ export default function Login() {
         <h1 className="text-2xl font-bold">Login</h1>
       </div>
       
+      {/* Service status indicator */}
+      {serviceStatus === 'offline' && (
+        <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 relative">
+          <p className="font-bold">Authentication Service Warning</p>
+          <p>The authentication service appears to be offline. This could be due to connection issues or because we're connecting to a new database. Your data is safe.</p>
+          <p className="mt-2">If you're a returning user, you may need to create a new account as we've updated our authentication system.</p>
+        </div>
+      )}
+      
+      {serviceStatus === 'checking' && (
+        <div className="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 relative">
+          <p className="font-bold">Checking authentication services...</p>
+          <div className="flex items-center mt-1">
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500 mr-2"></div>
+            <p>Please wait while we verify the connection to our secure services</p>
+          </div>
+        </div>
+      )}
+      
       <div className="flex-1 flex items-center justify-center p-4">
         <div className={`w-full max-w-md p-6 rounded-lg shadow-lg ${
           isDarkMode ? 'bg-gray-800' : 'bg-white'
         }`}>
           <form className="space-y-6" onSubmit={handleSubmit}>
             {error && (
-              <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
-                {error}
+              <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative">
+                <span className="block sm:inline">{error}</span>
+                <button 
+                  className="absolute top-0 bottom-0 right-0 px-4 py-3"
+                  onClick={() => setError('')}
+                >
+                  <span className="text-red-500">×</span>
+                </button>
               </div>
             )}
             {resetSent && (
-              <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded">
-                Password reset email sent! Check your inbox.
+              <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative">
+                <span className="block sm:inline">Password reset email sent! Check your inbox.</span>
+                <button 
+                  className="absolute top-0 bottom-0 right-0 px-4 py-3"
+                  onClick={() => setResetSent(false)}
+                >
+                  <span className="text-green-500">×</span>
+                </button>
               </div>
             )}
             

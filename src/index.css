@@ -10,6 +10,19 @@
   --text-primary: #111827;
   --text-secondary: #4B5563;
   --border-color: #D1D5DB;
+  --container-padding: 1rem;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --container-padding: 1.5rem;
+  }
+}
+
+@media (min-width: 768px) {
+  :root {
+    --container-padding: 2rem;
+  }
 }
 
 .dark-mode {
@@ -25,6 +38,13 @@ body {
   background-color: var(--bg-primary);
   color: var(--text-primary);
   transition: background-color 0.3s ease, color 0.3s ease;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  width: 100%;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 input, textarea, select {
@@ -117,9 +137,101 @@ button:not([class*="bg-"]) {
 /* Mobile layout optimizations */
 .mobile-container {
   max-width: 100%;
-  padding: 0 16px;
+  padding: 0 var(--container-padding);
   margin: 0 auto;
   padding-bottom: 70px; /* Make room for bottom navbar */
+}
+
+/* Responsive container class */
+.responsive-container {
+  width: 100%;
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: var(--container-padding);
+  padding-right: var(--container-padding);
+}
+
+@media (min-width: 640px) {
+  .responsive-container {
+    max-width: 640px;
+  }
+}
+
+@media (min-width: 768px) {
+  .responsive-container {
+    max-width: 768px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .responsive-container {
+    max-width: 1024px;
+  }
+}
+
+@media (min-width: 1280px) {
+  .responsive-container {
+    max-width: 1280px;
+  }
+}
+
+/* Responsive grid layouts */
+.responsive-grid {
+  display: grid;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+@media (min-width: 640px) {
+  .responsive-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 768px) {
+  .responsive-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .responsive-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* Responsive margin and padding classes */
+.responsive-p {
+  padding: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .responsive-p {
+    padding: 1rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .responsive-p {
+    padding: 1.5rem;
+  }
+}
+
+.responsive-m {
+  margin: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .responsive-m {
+    margin: 1rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .responsive-m {
+    margin: 1.5rem;
+  }
 }
 
 /* iPhone simulator styles */
@@ -158,9 +270,30 @@ button:not([class*="bg-"]) {
   transition: all 0.3s ease;
 }
 
+/* Bottom safe area for iOS devices */
+.has-safe-area {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
 /* Loader element */
 .loader {
   @apply inline-block animate-spin rounded-full border-t-2 border-b-2 border-blue-500;
   width: 2rem;
   height: 2rem;
+}
+
+/* Animation classes */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out forwards;
 }
